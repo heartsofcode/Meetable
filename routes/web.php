@@ -24,6 +24,9 @@ Route::get('/setup/heroku-in-progress', 'Setup\Controller@heroku_in_progress')->
 
 else:
 
+Route::post('/mcp', 'MCPController@handle')->middleware('throttle:60,1');
+Route::get('/mcp', 'MCPController@handleGet');
+
 Route::get('/', 'Controller@index')->name('index');
 Route::get('/custom-css', 'Controller@custom_css');
 
