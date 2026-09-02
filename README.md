@@ -62,6 +62,11 @@ docker compose up -d
 * [Composer](https://getcomposer.org)
 * MySQL/MariaDB
 * Optional: Redis
+* PHP Extensions:
+  * imagick
+  * redis
+  * simplexml
+  * mbstring
 
 #### Installation Instructions
 
