@@ -13,6 +13,7 @@ use Auth, Storage, Gate, Log, DB;
 use Image;
 use DateTime;
 use App\Services\Zoom, App\Services\EventParser;
+use App\Helpers\Dates;
 use App\Events\EventCreated, App\Events\EventUpdated;
 
 class EventController extends BaseController
@@ -61,11 +62,13 @@ class EventController extends BaseController
         Gate::authorize('create-event');
 
         // Check for required fields: name, start_date
-        $request->validate([
+        $request->validate(array_merge([
             'name' => 'required',
             'start_date' => 'required|date_format:Y-m-d',
             'status' => 'in:'.implode(',', array_keys(Event::$STATUSES)),
-        ]);
+            'recurrence_interval' => 'nullable|in:'.implode(',', Event::$RECURRENCE_INTERVALS),
+            'recurrence_interval_count' => 'required_if:recurrence_interval,weekly_n|nullable|integer|min:1|max:52',
+        ], Event::url_validation_rules()));
 
         $event = new Event();
         $event->name = request('name');
@@ -75,6 +78,9 @@ class EventController extends BaseController
         if(request('is_template')) {
             $event->is_template = true;
             $event->recurrence_interval = request('recurrence_interval');
+            $event->recurrence_interval_count = request('recurrence_interval') === 'weekly_n'
+                ? (request('recurrence_interval_count') ?: null)
+                : null;
             $event->key = '';
         }
 
@@ -130,7 +136,7 @@ class EventController extends BaseController
         if(request('create_zoom_meeting')) {
             $meeting_result = $event->schedule_zoom_meeting();
             if(!$meeting_result) {
-                back()->withInput()->withErrors(['Failed to create the Zoom meeting. The changes were not saved.']);
+                return back()->withInput()->withErrors([__('event_form.zoom_failed')]);
             }
         }
 
@@ -172,7 +178,7 @@ class EventController extends BaseController
         return view('edit-event', [
             'event' => $event,
             'mode' => 'edit',
-            'action_heading' => ($event->recurrence_interval ? 'Edit Recurring' : 'Editing'),
+            'action_heading' => __($event->recurrence_interval ? 'event_form.heading.edit_recurring' : 'event_form.heading.editing', ['name' => $event->name]),
             'form_action' => route('save-event', $event),
         ]);
     }
@@ -196,7 +202,7 @@ class EventController extends BaseController
         return view('edit-event', [
             'event' => $event,
             'mode' => 'clone',
-            'action_heading' => 'Cloning',
+            'action_heading' => __('event_form.heading.cloning', ['name' => $event->name]),
             'form_action' => route('create-event'),
         ]);
     }
@@ -216,7 +222,7 @@ class EventController extends BaseController
         return view('edit-event', [
             'event' => $event,
             'mode' => 'recurring',
-            'action_heading' => 'Create Recurring',
+            'action_heading' => __('event_form.heading.create_recurring', ['name' => $event->name]),
             'form_action' => route('create-event'),
         ]);
     }
@@ -224,27 +230,32 @@ class EventController extends BaseController
     public function recurring_event_details(Request $request, Event $event) {
         Gate::authorize('manage-event', $event);
 
-        $recurrence = request('recurrence');
         $date = new DateTime(request('date'));
 
-
+        // Only the last two occurrences of a weekday are worth offering to count
+        // from the end of the month; anything earlier is clearer counted forwards.
+        $weeks_from_end = Event::weeks_from_end_of_month($date);
 
         return view('recurring-event-details', [
             'event' => $event,
-            'recur_month_date' => $date->format('M j'),
-            'recur_date' => $date->format('jS'),
-            'recur_dow' => $date->format('l'),
+            'recur_month_date' => Dates::format($date, 'month_day'),
+            'recur_date' => Dates::format($date, 'day_ordinal'),
+            'recur_dow' => Dates::format($date, 'weekday'),
+            'recur_dow_ordinal' => Event::day_of_week_ordinal_label($date),
+            'recur_dow_from_end' => $weeks_from_end <= 2 ? Event::day_of_week_from_end_label($date) : null,
         ]);
     }
 
     public function save_event(Request $request, Event $event) {
         Gate::authorize('manage-event', $event);
 
-        $request->validate([
+        $request->validate(array_merge([
             'name' => 'required',
             'start_date' => 'required|date_format:Y-m-d',
             'status' => 'in:'.implode(',', array_keys(Event::$STATUSES)),
-        ]);
+            'recurrence_interval' => 'nullable|in:'.implode(',', Event::$RECURRENCE_INTERVALS),
+            'recurrence_interval_count' => 'required_if:recurrence_interval,weekly_n|nullable|integer|min:1|max:52',
+        ], Event::url_validation_rules()));
 
         if($event->fields_from_ics) {
             // Remove edited fields from the list of fields created by an ICS invite
@@ -277,6 +288,13 @@ class EventController extends BaseController
         }
 
 
+        // What the template gave its occurrences before this edit, to tell which of
+        // their properties were changed on the occurrence itself
+        if($event->is_template) {
+            $previous_template = $event->getAttributes();
+            $previous_template_tags = $event->tags()->pluck('tag')->all();
+        }
+
         // Update the properties on the event
         foreach(Event::$EDITABLE_PROPERTIES as $p) {
             $event->{$p} = (request($p) ?: null);
@@ -303,7 +321,7 @@ class EventController extends BaseController
         if(request('create_zoom_meeting')) {
             $meeting_result = $event->schedule_zoom_meeting();
             if(!$meeting_result) {
-                back()->withInput()->withErrors(['Failed to create the Zoom meeting. The changes were not saved.']);
+                return back()->withInput()->withErrors([__('event_form.zoom_failed')]);
             }
         } elseif($event->zoom_meeting_id) {
             $event->update_zoom_meeting();
@@ -312,6 +330,9 @@ class EventController extends BaseController
         // Allow event templates to change the recurrence property
         if($event->is_template) {
             $event->recurrence_interval = request('recurrence_interval');
+            $event->recurrence_interval_count = request('recurrence_interval') === 'weekly_n'
+                ? (request('recurrence_interval_count') ?: null)
+                : null;
         }
 
         $event->last_modified_by = Auth::user()->id;
@@ -340,8 +361,7 @@ class EventController extends BaseController
         event(new EventUpdated($event, $revision));
 
         if($event->is_template) {
-            $event->delete_upcoming_recurrences();
-            $event->create_upcoming_recurrences();
+            $event->sync_upcoming_recurrences($previous_template, $previous_template_tags);
             return redirect(route('templates'));
         } else {
             return redirect($event->permalink());
@@ -360,7 +380,8 @@ class EventController extends BaseController
     }
 
     public function view_revision(Event $event, EventRevision $revision) {
-        Gate::authorize('manage-event', $revision);
+        Gate::authorize('manage-event', $event);
+        abort_if($revision->event_id != $event->id, 404);
 
         $date = new DateTime($revision->start_date);
 
@@ -376,13 +397,21 @@ class EventController extends BaseController
     }
 
     public function view_revision_diff(Event $event, EventRevision $revision) {
-        Gate::authorize('manage-event', $revision);
+        Gate::authorize('manage-event', $event);
+        abort_if($revision->event_id != $event->id, 404);
 
         $previous = EventRevision::where('event_id', $revision->event_id)
           ->where('id', '!=', $revision->id)
           ->where('created_at', '<', $revision->created_at)
           ->orderBy('created_at', 'desc')
           ->first();
+
+        // The oldest revision has nothing before it, so diff it against a blank
+        // revision, which shows every field it set as newly added.
+        if(!$previous) {
+            $previous = new EventRevision;
+            $previous->tags = '[]';
+        }
 
         return view('diff', [
             'current' => $revision,
@@ -538,7 +567,7 @@ class EventController extends BaseController
     }
 
     public function edit_registration(Event $event) {
-        Gate::authorize('create-event');
+        Gate::authorize('manage-event', $event);
 
 
 

@@ -27,7 +27,7 @@ class RouteServiceProvider extends ServiceProvider
         Route::pattern('month', '[0-9]{2}');
         Route::pattern('day', '[0-9]{2}');
         Route::pattern('key', '[0-9a-zA-Z]{12}');
-        Route::pattern('slug', '[0-9a-zA-Zà-öø-ÿāăąćĉċčŏœ\-]+');
+        Route::pattern('slug', '[\p{L}\p{M}\p{N}\-]+');
 
         parent::boot();
     }
@@ -44,8 +44,6 @@ class RouteServiceProvider extends ServiceProvider
         $this->mapWebRoutes();
 
         $this->mapICSRoutes();
-
-        $this->mapEmailRoutes();
     }
 
     /**
@@ -82,12 +80,5 @@ class RouteServiceProvider extends ServiceProvider
         Route::middleware('ics')
              ->namespace($this->namespace)
              ->group(base_path('routes/ics.php'));
-    }
-
-    protected function mapEmailRoutes()
-    {
-        Route::middleware('email')
-             ->namespace($this->namespace)
-             ->group(base_path('routes/email.php'));
     }
 }

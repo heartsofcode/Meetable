@@ -5,13 +5,14 @@ namespace App\Http\Controllers\Auth;
 use Illuminate\Foundation\Validation\ValidatesRequests;
 use Illuminate\Routing\Controller as BaseController;
 use DateTime, DateTimeZone, Exception;
-use DB, Log;
+use Auth, DB, Log;
 use App\User;
 use Illuminate\Support\Str;
 use GuzzleHttp;
 
 class OIDCController extends BaseController
 {
+    use CompletesOAuthLogin;
 
     public static function oidcAuthURL() {
         $state = bin2hex(random_bytes(16));
@@ -39,17 +40,17 @@ class OIDCController extends BaseController
     }
 
     public function callback() {
-        if(request('state') != session('OIDC_STATE')) {
+        if(!$this->validState('OIDC_STATE')) {
             return view('auth/oidc-error', [
-                'error' => 'Invalid OAuth State',
-                'error_description' => 'There was a problem with the login process. Double check you are allowing cookies from this domain and try again.',
+                'error' => __('login.errors.invalid_state'),
+                'error_description' => __('login.errors.invalid_state_description'),
             ]);
         }
 
         if(!request('code')) {
             return view('auth/oidc-error', [
-                'error' => 'OAuth Error',
-                'error_description' => 'The OpenID Connect login process did not complete successfully. Please try again.',
+                'error' => __('login.errors.oauth_error'),
+                'error_description' => __('login.errors.not_completed', ['provider' => 'OpenID Connect']),
                 'details' => [
                     'error' => request('error'),
                     'error_description' => request('error_description')
@@ -71,7 +72,7 @@ class OIDCController extends BaseController
                     'redirect_uri' => route('oidc-redirect'),
                     'client_id' => env('OIDC_CLIENT_ID'),
                     'client_secret' => env('OIDC_CLIENT_SECRET'),
-                    'code_verifier' => session('OIDC_CODE_VERIFIER'),
+                    'code_verifier' => session()->pull('OIDC_CODE_VERIFIER'),
                 ],
             ]);
         } catch(\GuzzleHttp\Exception\TransferException $e) {
@@ -83,8 +84,8 @@ class OIDCController extends BaseController
                 Log::error((string)$e->getResponse()->getBody());
             }
             return view('auth/oidc-error', [
-                'error' => 'OAuth Error',
-                'error_description' => 'The OpenID Connect server returned an error.',
+                'error' => __('login.errors.oauth_error'),
+                'error_description' => __('login.errors.oidc_server_error'),
                 'details' => $details
             ]);
         }
@@ -94,17 +95,26 @@ class OIDCController extends BaseController
         $info = json_decode($body, true);
 
         if(!$info || !isset($info['id_token'])) {
-            Log::info($info);
+            Log::info('The OpenID Connect token response had no id_token');
             return view('auth/oidc-error', [
-                'error' => 'OAuth Error',
-                'error_description' => 'The OpenID Connect server returned an invalid response.',
+                'error' => __('login.errors.oauth_error'),
+                'error_description' => __('login.errors.oidc_invalid_response'),
             ]);
         }
 
         $id_token = $info['id_token'];
 
-        $claims_component = explode('.', $id_token)[1];
-        $userinfo = json_decode(base64_decode($claims_component), true);
+        // The ID token came straight from the token endpoint over TLS, so its claims are
+        // read without checking the signature. JWTs use unpadded base64url encoding.
+        $claims_component = explode('.', $id_token)[1] ?? '';
+        $userinfo = json_decode(base64_decode(strtr($claims_component, '-_', '+/')), true);
+
+        if(!is_array($userinfo) || empty($userinfo['sub']) || !is_string($userinfo['sub'])) {
+            return view('auth/oidc-error', [
+                'error' => __('login.errors.oauth_error'),
+                'error_description' => __('login.errors.oidc_no_subject'),
+            ]);
+        }
 
 
         // Check if this sub username is in the list of allowed users
@@ -113,13 +123,13 @@ class OIDCController extends BaseController
             if(!in_array($userinfo['sub'], $allowedUsers)) {
                 Log::error('User '.$userinfo['sub'].' is not in the list of allowed users');
                 return view('auth/oidc-error', [
-                    'error' => 'User Not Allowed',
-                    'error_description' => 'Sorry, you are not in the list of allowed users for this website.',
+                    'error' => __('login.errors.not_allowed'),
+                    'error_description' => __('login.errors.not_in_allowed_users'),
                 ]);
             }
         }
 
-        Log::info('User logged in: '.json_encode($userinfo));
+        Log::info('User logged in: '.$userinfo['sub']);
 
         // Create the user record if it doesn't yet exist
         $user = User::where('identifier', $userinfo['sub'])->first();
@@ -141,16 +151,8 @@ class OIDCController extends BaseController
 
         $user->save();
 
-        // Now set the session data to make this user logged-in
-        session([
-            'OIDC_USER' => $userinfo['sub'],
-        ]);
-
-        if(session('AUTH_RETURN_TO')) {
-            return redirect(session('AUTH_RETURN_TO'));
-        } else {
-            return redirect('/');
-        }
+        // Now make this user logged-in
+        return $this->redirectAfterLogin('OIDC_USER', $userinfo['sub']);
     }
 
     public function logout() {

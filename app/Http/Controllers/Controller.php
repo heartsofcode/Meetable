@@ -7,6 +7,7 @@ use Illuminate\Foundation\Validation\ValidatesRequests;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Routing\Controller as BaseController;
 use App\Event, App\Tag, App\Setting;
+use App\Helpers\Dates;
 use DateTime, DateTimeZone, DateInterval, Exception;
 use DB;
 
@@ -54,7 +55,7 @@ class Controller extends BaseController
 
         $tags = [];
         if(count($events) > 0) {
-            $query = DB::select(DB::raw('SELECT tag, COUNT(1) AS cities_count, SUM(num) AS events_count
+            $query = DB::select('SELECT tag, COUNT(1) AS cities_count, SUM(num) AS events_count
                 FROM
                 (SELECT tags.tag, events.location_locality AS locality, COUNT(1) AS num
                 FROM events
@@ -65,7 +66,7 @@ class Controller extends BaseController
                 ORDER BY tag) AS data
                 GROUP BY tag
                 ORDER BY cities_count DESC, tag
-                '));
+                ');
             foreach($query as $tag) {
                 // Only show tags used by more than 1 event, otherwise the list is very
                 // long and it isn't very interesting to click a tag and see just one event
@@ -86,7 +87,7 @@ class Controller extends BaseController
     public function tag($tag) {
         $tags = [];
         foreach(explode(',', $tag) as $t) {
-            $tags[] = Tag::get($t);
+            $tags[] = Tag::lookup($t);
         }
 
         $year = $month = false;
@@ -132,7 +133,7 @@ class Controller extends BaseController
     public function tag_archive($tag) {
         $tags = [];
         foreach(explode(',', $tag) as $t) {
-            $tags[] = Tag::get($t);
+            $tags[] = Tag::lookup($t);
         }
 
         $events = $this->events_query(false, false, false, false);
@@ -157,7 +158,7 @@ class Controller extends BaseController
     public function year_tag($year, $tag) {
         $tags = [];
         foreach(explode(',', $tag) as $t) {
-            $tags[] = Tag::get($t);
+            $tags[] = Tag::lookup($t);
         }
 
         $now = new DateTime('now', new DateTimeZone('-12:00'));
@@ -175,11 +176,11 @@ class Controller extends BaseController
         $upcoming_events = $upcoming_events->get();
 
         $past_events = $this->events_query($year, false, false, false);
-        $past_events = $past_events->whereRaw(DB::raw('
+        $past_events = $past_events->whereRaw('
             ((start_date < "'.$nowDate.'" AND end_date IS NULL)
             OR
             (end_date < "'.$nowDate.'"))
-        '));
+        ');
         $past_events = Event::tagged($past_events, $tags);
         $past_events = $past_events->get();
 
@@ -195,7 +196,7 @@ class Controller extends BaseController
             'month' => false,
             'day' => false,
             'home' => (!$year && !$month && !$day),
-            'page_title' => $year . ' Events',
+            'page_title' => __('events.title.year', ['year' => $year]),
             'tags' => $tags,
             'page_type' => 'tag',
         ]);
@@ -238,11 +239,11 @@ class Controller extends BaseController
 
         if(!isset($opts['page_title'])) {
             if(!empty($opts['day'])) {
-                $opts['page_title'] = env('APP_NAME').' on '.date('F j, Y', strtotime($opts['year'].'-'.$opts['month'].'-'.$opts['day']));
+                $opts['page_title'] = __('events.title.day', ['site' => env('APP_NAME'), 'date' => Dates::format($opts['year'].'-'.$opts['month'].'-'.$opts['day'], 'date_long')]);
             } elseif(!empty($opts['month'])) {
-                $opts['page_title'] = env('APP_NAME').' in '.date('F Y', strtotime($opts['year'].'-'.$opts['month'].'-01'));
+                $opts['page_title'] = __('events.title.month', ['site' => env('APP_NAME'), 'month' => Dates::format($opts['year'].'-'.$opts['month'].'-01', 'month_year')]);
             } elseif(!empty($opts['year'])) {
-                $opts['page_title'] = env('APP_NAME').' in '.$opts['year'];
+                $opts['page_title'] = __('events.title.year_on_site', ['site' => env('APP_NAME'), 'year' => $opts['year']]);
             } else {
                 $opts['page_title'] = env('APP_NAME');
             }
@@ -294,7 +295,7 @@ class Controller extends BaseController
         // Group tags by the number of different cities they are used in, and sort by the number of events.
         // This should produce a list where the first tags are the most broad/common across many cities,
         // and the tags lower down in the list are usually city-specific.
-        $query = DB::select(DB::raw('SELECT tag, COUNT(1) AS num_cities, SUM(num) AS num_events
+        $query = DB::select('SELECT tag, COUNT(1) AS num_cities, SUM(num) AS num_events
             FROM
             (SELECT tags.tag, events.location_locality AS locality, COUNT(1) AS num
             FROM events
@@ -305,7 +306,7 @@ class Controller extends BaseController
             ORDER BY tag) AS data
             GROUP BY tag
             ORDER BY num_cities DESC, tag
-            '));
+            ');
 
         $tags = [];
         $max = false;
@@ -388,7 +389,7 @@ class Controller extends BaseController
 
         $meeting_url = false;
 
-        if($event->meeting_url && !$event->is_past() && $event->is_starting_soon()) {
+        if($event->meeting_url_is_visible()) {
             $meeting_url = $event->meeting_url;
         }
 
@@ -398,7 +399,7 @@ class Controller extends BaseController
     }
 
     public function export_event_json(Event $event, $secretkey) {
-        if($event->export_secret != $secretkey) {
+        if(!$event->export_secret || !hash_equals((string)$event->export_secret, (string)$secretkey)) {
             abort(403);
         }
 
@@ -414,9 +415,13 @@ class Controller extends BaseController
     }
 
     public function find_matching_events($year, $month, $partial_slug) {
+        // Match the beginning of the slug literally, so % and _ can't list every event in the month
+        $prefix = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $partial_slug);
+
         $events = Event::whereYear('start_date', $year)
           ->whereMonth('start_date', $month)
-          ->where('slug', 'like', $partial_slug.'%')
+          ->where('slug', 'like', $prefix.'%')
+          ->where('unlisted', 0)
           ->where('is_template', 0)
           ->get();
 
@@ -505,6 +510,15 @@ class Controller extends BaseController
     public static function hms_to_sec($hms) {
         $parts = explode(':', $hms);
         return $parts[2] + ($parts[1]*60) + ($parts[0]*60*60);
+    }
+
+    // Remembers the language a visitor picked, instead of the one their browser asks for
+    public function set_language($locale) {
+        if(!in_array($locale, \App\Helpers\Locales::available()))
+            abort(404);
+
+        return redirect(\App\Helpers\Uri::same_origin_path(request()->headers->get('referer')))
+            ->withCookie(cookie()->forever(\App\Http\Middleware\SetLocale::COOKIE, $locale));
     }
 
     public function local_time() {

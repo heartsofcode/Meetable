@@ -24,10 +24,10 @@ use App\Setting;
 <meta name="twitter:image" content="{{ $event->cover_image_absolute_url() }}">
 <meta name="twitter:card" content="summary_large_image">
 @endif
-<meta name="twitter:label1" value="Date">
+<meta name="twitter:label1" value="{{ __('events.meta.date') }}">
 <meta name="twitter:data1" value="{{ $event->date_summary_text() }}">
 @if($event->location_summary())
-<meta name="twitter:label2" value="Location">
+<meta name="twitter:label2" value="{{ __('events.meta.location') }}">
 <meta name="twitter:data2" value="{{ $event->location_summary_with_name() }}">
 @endif
 @endsection
@@ -50,7 +50,7 @@ use App\Setting;
 
         <a href="{{ route('edit-event', $event) }}" class="button">
             <span class="icon">@icon(edit)</span>
-            <span>Edit</span>
+            <span>{{ __('common.edit') }}</span>
         </a>
 
         <div class="dropdown is-right">
@@ -64,46 +64,48 @@ use App\Setting;
                 <div class="dropdown-content">
                     <a class="dropdown-item" href="{{ route('clone-event', $event) }}">
                         <span class="icon">@icon(copy)</span>
-                        <span>Clone Event</span>
+                        <span>{{ __('events.actions.clone') }}</span>
                     </a>
                     <a class="dropdown-item" href="{{ route('recurring-event', $event) }}">
                         <span class="icon">@icon(redo)</span>
-                        <span>Create Recurring Event</span>
+                        <span>{{ __('events.actions.create_recurring') }}</span>
                     </a>
                     <a class="dropdown-item" href="{{ route('add-event-photo', $event) }}">
                         <span class="icon">@icon(camera)</span>
-                        <span>Add Photo</span>
+                        <span>{{ __('events.actions.add_photo') }}</span>
                     </a>
                     <a class="dropdown-item" href="{{ route('new-event', ['parent'=>$event]) }}">
                         <span class="icon">@icon(calendar)</span>
-                        <span>Add Sub-Event</span>
+                        <span>{{ __('events.actions.add_sub_event') }}</span>
                     </a>
                     @if(Setting::value('enable_webmention_responses'))
                     <a class="dropdown-item" href="{{ route('edit-responses', $event) }}">
                         <span class="icon">@icon(comment)</span>
-                        <span>Edit Responses</span>
+                        <span>{{ __('events.actions.edit_responses') }}</span>
                     </a>
                     @endif
                     @if(Setting::value('enable_registration'))
                         <a class="dropdown-item" href="{{ route('edit-registration', $event) }}">
                             <span class="icon">@icon(file-alt)</span>
-                            <span>{{ $event->registration ? 'Configure' : 'Enable' }} Registration</span>
+                            <span>{{ $event->registration ? __('events.actions.configure_registration') : __('events.actions.enable_registration') }}</span>
                         </a>
                     @endif
                     <a class="dropdown-item" href="{{ route('revision-history', $event) }}">
                         <span class="icon">@icon(history)</span>
-                        <span>Revision History</span>
+                        <span>{{ __('events.actions.revision_history') }}</span>
                     </a>
                     @if($num=$event->num_pending_responses())
                     <a class="dropdown-item" href="{{ route('moderate-responses', $event) }}">
                         <span class="icon">@icon(comment)</span>
-                        <span>Moderate Responses {!! $num ? "<span class='badge'>($num)</span>" : '' !!}</span>
+                        <span>{{ __('events.actions.moderate_responses') }} {!! $num ? "<span class='badge'>($num)</span>" : '' !!}</span>
                     </a>
                     @endif
+                    @if($event->export_secret)
                     <a class="dropdown-item" href="{{ route('secret-export-json', [$event, $event->export_secret]) }}">
                         <span class="icon">@icon(link)</span>
-                        <span>Copy Export URL</span>
+                        <span>{{ __('events.actions.copy_export_url') }}</span>
                     </a>
+                    @endif
                 </div>
             </div>
         </div>
@@ -117,7 +119,7 @@ use App\Setting;
 
 @if($event->meeting_url && !$event->timezone)
     <div class="notification is-danger">
-        The meeting URL for this event will not be shown because there is no timezone set for this event. Please edit this event to include a timezone.
+        {{ __('events.meeting_url_needs_timezone') }}
     </div>
 @endif
 
@@ -127,20 +129,20 @@ use App\Setting;
 <article class="h-event event">
 
     @if($mode == 'archive')
-        <b>Viewing event at revision {{ $event->created_at }}</b>
+        <b>{{ __('revisions.viewing_event_at', ['date' => $event->created_at]) }}</b>
 
-        <p><a href="{{ route('revision-history', $event_id) }}">@icon(arrow-circle-left) revision history</a></p>
+        <p><a href="{{ route('revision-history', $event_id) }}">@icon(arrow-circle-left) {{ __('revisions.back_to_history') }}</a></p>
     @endif
 
     @if($event->cover_image)
         <div class="cover-image">
-            <img src="{{ $event->cover_image }}" class="u-featured" style="max-width: 720px; width: 100%;">
+            <img src="{{ \App\Helpers\Uri::safe_href($event->cover_image) }}" class="u-featured" style="max-width: 720px; width: 100%;">
         </div>
     @endif
 
     <h1 class="event-name">
-        @if($event->meeting_url && !$event->is_past())
-            <a href="{{ $event->meeting_url }}" target="_blank">
+        @if($event->meeting_url_is_visible())
+            <a href="{{ \App\Helpers\Uri::safe_href($event->meeting_url) }}" target="_blank">
                 {!! $event->status_tag() !!}
             </a>
         @else
@@ -161,16 +163,17 @@ use App\Setting;
     <div class="date segment with-icon">
         <span class="icon">@icon(clock)</span>
         <span>
-            <div>{{ $event->status == 'postponed' ? 'TBD, originally ' : '' }}
-                <time datetime="{{ $event->start_datetime()->format('c') }}"  class="event-localize-date {{ (!$event->has_physical_location() ? 'is-virtual-event' : '') }}" data-timezone="{{ $event->timezone }}"  data-original-date="{{ $event->start_datetime()->format('M j, Y g:ia') }}" data-dateformat="dateonly" data-show-tooltip="false">
-                    {!! $event->display_date() !!}
+            <div>{{ $event->status == 'postponed' ? __('events.tbd_originally').' ' : '' }}
+                {{-- A date without a time is the same date everywhere, so it's only shown in the viewer's timezone when the event has a start time --}}
+                <time datetime="{{ $event->start_datetime()->format('c') }}" class="{{ $event->start_time && !$event->is_multiday() ? 'event-localize-date' : '' }} {{ (!$event->has_physical_location() ? 'is-virtual-event' : '') }}" data-timezone="{{ $event->timezone }}" data-original-date="{{ \App\Helpers\Dates::format($event->start_datetime(), 'datetime') }}" @if($event->end_datetime()) data-end="{{ $event->end_datetime()->format('c') }}" @endif data-dateformat="dateonly" data-show-tooltip="false">
+                    {!! $event->display_date(true) !!}
                 </time>
             </div>
             @if(!$event->is_multiday() && $event->display_time())
                 <div class="time">
                     @if($event->timezone)
                         <a href="{{ route('local_time') }}?date={{ urlencode($event->start_datetime_local()) }}&tz={{ urlencode($event->timezone) }}">
-                            <time datetime="{{ $event->start_datetime()->format('c') }}" class="has-tooltip-bottom event-localize-date {{ (!$event->has_physical_location() ? 'is-virtual-event' : '') }}" data-timezone="{{ $event->timezone }}" data-original-date="{{ $event->start_datetime()->format('M j, Y g:ia') }}" data-dateformat="timeonly">
+                            <time datetime="{{ $event->start_datetime()->format('c') }}" class="has-tooltip-bottom event-localize-date {{ (!$event->has_physical_location() ? 'is-virtual-event' : '') }}" data-timezone="{{ $event->timezone }}" data-original-date="{{ \App\Helpers\Dates::format($event->start_datetime(), 'datetime') }}" @if($event->end_datetime()) data-end="{{ $event->end_datetime()->format('c') }}" @endif data-dateformat="timeonly">
                                 {!! $event->display_time() !!}
                             </time>
                         </a>
@@ -183,28 +186,28 @@ use App\Setting;
                 </div>
             @endif
             {!! $event->mf2_date_html() !!}
-            @if(!$event->is_past() && !in_array($event->status, ['cancelled','postponed']))
+            @if($mode != 'archive' && !$event->is_past() && !in_array($event->status, ['cancelled','postponed']))
             <div class="add-to-calendar">
                 <div class="dropdown is-hoverable">
                     <div class="dropdown-trigger">
                         <a aria-haspopup="true" aria-controls="add-to-calendar-menu">
-                            <span>Add to Calendar</span>
+                            <span>{{ __('events.calendar.add_to_calendar') }}</span>
                         </a>
                     </div>
                     <div class="dropdown-menu" role="menu" id="add-to-calendar-menu">
                         <div class="dropdown-content">
-                            @if(count($event->tags) > 0)
+                            @if(count($event->tag_list) > 0)
                                 <a href="{{ $event->tag_feed_ics_link() }}" class="dropdown-item">
-                                    @icon(calendar-alt) Tag Feed <span class="tag is-rounded">#{{ $event->tags[0]->tag }}</span>
+                                    @icon(calendar-alt) {{ __('events.calendar.tag_feed') }} <span class="tag is-rounded">#{{ $event->tag_list[0] }}</span>
                                 </a>
                                 <hr class="dropdown-divider" />
                             @endif
-                            <div class="dropdown-item"><b>Single Event</b></div>
+                            <div class="dropdown-item"><b>{{ __('events.calendar.single_event') }}</b></div>
                             <a href="{{ $event->ics_permalink() }}" class="dropdown-item" target="_blank">
-                                @icon(calendar) iCal
+                                @icon(calendar) {{ __('events.calendar.ical') }}
                             </a>
                             <a href="{{ route('add-to-google', $event->key) }}" class="dropdown-item" target="_blank">
-                                @brand_icon(google) Google Calendar
+                                @brand_icon(google) {{ __('events.calendar.google') }}
                             </a>
                         </div>
                     </div>
@@ -234,7 +237,7 @@ use App\Setting;
         <div class="website segment with-icon with-url">
             <span class="icon">@icon(link)</span>
             <span>
-                <a href="{{ $event->website }}" class="u-url" rel="canonical" title="{{ $event->website }}">
+                <a href="{{ \App\Helpers\Uri::safe_href($event->website) }}" class="u-url" rel="canonical" title="{{ $event->website }}">
                     {{ strlen($event->website) > 40 ?  parse_url($event->website, PHP_URL_HOST) : \p3k\url\display_url($event->website) }}
                 </a>
             </span>
@@ -245,7 +248,7 @@ use App\Setting;
         <div class="website segment with-icon with-url">
             <span class="icon">@icon(ticket-alt)</span>
             <span>
-                <a href="{{ $event->tickets_url }}" title="{{ $event->tickets_url }}">
+                <a href="{{ \App\Helpers\Uri::safe_href($event->tickets_url) }}" title="{{ $event->tickets_url }}">
                     {{ strlen($event->tickets_url) > 40 ?  parse_url($event->tickets_url, PHP_URL_HOST) : \p3k\url\display_url($event->tickets_url) }}
                 </a>
             </span>
@@ -256,9 +259,9 @@ use App\Setting;
         <div class="code-of-conduct segment with-icon with-url">
             <span class="icon">@icon(gavel)</span>
             <span class="text">
-                <span class="segment-title">Code of Conduct</span>
+                <span class="segment-title">{{ __('events.code_of_conduct') }}</span>
                 @foreach($event->code_of_conduct_urls() as $url)
-                    <a href="{{ $url }}" title="{{ $url }}" class="segment-url">
+                    <a href="{{ \App\Helpers\Uri::safe_href($url) }}" title="{{ $url }}" class="segment-url">
                         {{ strlen($url) > 80 ?  parse_url($url, PHP_URL_HOST) : \p3k\url\display_url($url) }}
                     </a>
                 @endforeach
@@ -271,7 +274,7 @@ use App\Setting;
             <div class="website segment with-icon">
                 <span class="icon">@icon(video)</span>
                 <span>
-                    <a href="{{ $event->meeting_url }}" title="{{ $event->meeting_url }}" target="_blank">
+                    <a href="{{ \App\Helpers\Uri::safe_href($event->meeting_url) }}" title="{{ $event->meeting_url }}" target="_blank">
                         {{ strlen($event->meeting_url) > 80 ?  parse_url($event->meeting_url, PHP_URL_HOST) : \p3k\url\display_url($event->meeting_url) }}
                     </a>
                 </span>
@@ -283,12 +286,12 @@ use App\Setting;
                 <span class="icon">@icon(video)</span>
                 <span>
                     @if($event->is_starting_soon() || $event->is_ongoing())
-                        <a href="{{ $event->meeting_url }}" title="{{ $event->meeting_url }}" class="pulsing-yellow" target="_blank">
-                            Join the Online Meeting
+                        <a href="{{ \App\Helpers\Uri::safe_href($event->meeting_url) }}" title="{{ $event->meeting_url }}" class="pulsing-yellow" target="_blank">
+                            {{ __('events.join_meeting') }}
                         </a>
                     @else
-                        <a href="" class="pulsing-yellow hidden" target="_blank" id="event-meeting-url">Join the Online Meeting</a>
-                        <span id="event-meeting-url-msg">The meeting link will be shown 15 minutes before the event</span>
+                        <a href="" class="pulsing-yellow hidden" target="_blank" id="event-meeting-url">{{ __('events.join_meeting') }}</a>
+                        <span id="event-meeting-url-msg">{{ __('events.meeting_link_shown_soon') }}</span>
                     @endif
                 </span>
             </div>
@@ -299,7 +302,7 @@ use App\Setting;
         <div class="website segment with-icon with-url">
             <span class="icon">@brand_icon(youtube)</span>
             <span>
-                <a href="{{ $event->video_url }}" title="{{ $event->video_url }}">
+                <a href="{{ \App\Helpers\Uri::safe_href($event->video_url) }}" title="{{ $event->video_url }}">
                     {{ \p3k\url\display_url(strlen($event->video_url) > 40 ? 'http://'.parse_url($event->video_url, PHP_URL_HOST) : $event->video_url) }}
                 </a>
             </span>
@@ -316,8 +319,8 @@ use App\Setting;
         <div class="notes segment with-icon with-url">
             <span class="icon">@icon(pen)</span>
             <span class="text">
-                <span class="segment-title">Notes</span>
-                <a href="{{ $event->notes_url }}" title="{{ $event->notes_url }}" class="segment-url">
+                <span class="segment-title">{{ __('events.notes') }}</span>
+                <a href="{{ \App\Helpers\Uri::safe_href($event->notes_url) }}" title="{{ $event->notes_url }}" class="segment-url">
                     {{ \p3k\url\display_url(strlen($event->notes_url) > 40 ? 'http://'.parse_url($event->notes_url, PHP_URL_HOST) : $event->notes_url) }}
                 </a>
             </span>
@@ -350,7 +353,7 @@ use App\Setting;
 
     @if($event->children->count())
         <div class="sub-events" id="sub-events">
-            <b>Sessions</b>
+            <b>{{ __('events.sessions') }}</b>
             <ul>
                 @foreach($event->children as $child)
                     <li>
@@ -381,7 +384,7 @@ use App\Setting;
         <div class="responses rsvps" id="rsvps">
             <div class="level">
                 <div class="level-left">
-                    <h2 class="subtitle">RSVPs</h2>
+                    <h2 class="subtitle">{{ __('responses.rsvps') }}</h2>
                 </div>
                 <div class="level-right">
                 @can('can-rsvp')
@@ -389,14 +392,14 @@ use App\Setting;
                         @if($event->rsvp_string_for_user(Auth::user()) == 'yes')
                             <div class="buttons has-addons">
                                 <button id="rsvp-button" class="button is-pressed is-light" data-action="{{ route('event-rsvp', $event->id) }}">
-                                    {{ $event->is_past() ? 'I Went' : 'I\'m Going!' }}
+                                    {{ $event->is_past() ? __('responses.rsvp_went') : __('responses.rsvp_going') }}
                                 </button>
                                 <button id="rsvp-delete" class="button is-pressed is-danger is-light" data-action="{{ route('event-rsvp-delete', $event->id) }}">@icon(minus-circle)</button>
                             </div>
                         @else
                             <div class="buttons has-addons">
                                 <button id="rsvp-button" class="button is-light" data-action="{{ route('event-rsvp', $event->id) }}">
-                                    {{ $event->is_past() ? 'I Went' : 'I\'m Going!' }}
+                                    {{ $event->is_past() ? __('responses.rsvp_went') : __('responses.rsvp_going') }}
                                 </button>
                                 @if($event->rsvp_string_for_user(Auth::user()) == 'no')
                                     <button id="rsvp-delete" class="button is-pressed is-danger is-light" data-action="{{ route('event-rsvp-delete', $event->id) }}">@icon(minus-circle)</button>
@@ -415,7 +418,7 @@ use App\Setting;
             </ul>
 
             @if(count($event->rsvps_remote))
-                <h3 class="subtitle">Remote Attendees</h3>
+                <h3 class="subtitle">{{ __('responses.remote_attendees') }}</h3>
                 <ul>
                     @foreach($event->rsvps_remote as $rsvp)
                         <li>@include('components/rsvp-avatar', ['rsvp' => $rsvp])</li>
@@ -424,7 +427,7 @@ use App\Setting;
             @endif
 
             @if(count($event->rsvps_maybe))
-                <h3 class="subtitle">Maybe</h3>
+                <h3 class="subtitle">{{ __('responses.maybe') }}</h3>
                 <ul>
                     @foreach($event->rsvps_maybe as $rsvp)
                         <li>@include('components/rsvp-avatar', ['rsvp' => $rsvp])</li>
@@ -433,7 +436,7 @@ use App\Setting;
             @endif
 
             @if(count($event->rsvps_no))
-                <h3 class="subtitle">Can't Go</h3>
+                <h3 class="subtitle">{{ __('responses.cant_go') }}</h3>
                 <ul>
                     @foreach($event->rsvps_no as $rsvp)
                         <li>@include('components/rsvp-avatar', ['rsvp' => $rsvp])</li>
@@ -462,35 +465,36 @@ use App\Setting;
                     <div style="margin-top: 1em">
                         <div class="field has-addons">
                             <div class="control has-icons-right is-expanded">
-                                <input class="input photo-alt-text" type="text" placeholder="alt text">
+                                <input class="input photo-alt-text" type="text" placeholder="{{ __('responses.alt_text_placeholder') }}">
                                 <span class="hidden icon is-small is-right">@icon(check)</span>
                             </div>
                             <div class="control">
-                                <button class="button" id="save-photo-alt">Save</button>
+                                <button class="button" id="save-photo-alt">{{ __('common.save') }}</button>
                             </div>
                         </div>
                     </div>
                     <input type="hidden" id="response_id">
                     <input type="hidden" id="photo_id">
                     @endcan
-                    <p class="original-source">via <a href=""></a></p>
+                    <p class="original-source">{!! __('responses.photo_via', ['source' => '<a href=""></a>']) !!}</p>
                 </div>
             </div>
-            <button class="modal-close is-large" aria-label="close"></button>
+            <button class="modal-close is-large" aria-label="{{ __('common.close') }}"></button>
         </div>
     @endif
 
     @if($event->has_blog_posts())
         <div class="responses blog_posts" id="blog_posts">
-            <h2 class="subtitle">Blog Posts</h2>
+            <h2 class="subtitle">{{ __('responses.blog_posts') }}</h2>
             <ul>
                 @foreach($event->blog_posts as $post)
                     <li>
                         <p class="post-name"><a href="{{ $post->link() }}">{{ $post->name }}</a></p>
                         <p>
-                            by <a href="{{ $post->author_url() }}">{{ $post->author_display_name() }}</a>
                             @if($post->published)
-                                on {{ date('M j, Y', strtotime($post->published)) }}
+                                {!! __('responses.blog_post_by_on', ['author' => '<a href="'.e($post->author_url()).'">'.e($post->author_display_name()).'</a>', 'date' => e(\App\Helpers\Dates::format($post->published, 'date'))]) !!}
+                            @else
+                                {!! __('responses.blog_post_by', ['author' => '<a href="'.e($post->author_url()).'">'.e($post->author_display_name()).'</a>']) !!}
                             @endif
                         </p>
                     </li>
@@ -501,7 +505,7 @@ use App\Setting;
 
     @if($event->has_comments())
         <div class="responses comments" id="comments">
-            <h2 class="subtitle">Comments</h2>
+            <h2 class="subtitle">{{ __('responses.comments') }}</h2>
             <ul>
                 @foreach($event->comments as $comment)
                     <li>
@@ -522,7 +526,7 @@ use App\Setting;
                         <span class="meta">
                             <a href="{{ $comment->link() }}">
                                 <time datetime="{{ date('c', strtotime($comment->published)) }}">
-                                    {{ date('M j, Y', strtotime($comment->published)) }}
+                                    {{ \App\Helpers\Dates::format($comment->published, 'date') }}
                                 </time>
                             </a>
                         </span>

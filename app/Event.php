@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use DateTime, DateTimeZone, DateInterval, DatePeriod;
 use DB, Str, Log;
 use App\Services\Zoom;
+use App\Helpers\Dates;
 
 class Event extends Model
 {
@@ -28,17 +29,56 @@ class Event extends Model
         'cancelled' => 'Cancelled',
     ];
 
+    public static $RECURRENCE_INTERVALS = [
+        'weekly_dow', 'biweekly_dow', 'weekly_n',
+        'monthly_date', 'monthly_dow', 'monthly_dow_last',
+        'yearly',
+    ];
+
+    // Fields holding links. code_of_conduct_url can hold several, separated by spaces.
+    public static $URL_PROPERTIES = [
+        'website', 'tickets_url', 'code_of_conduct_url', 'meeting_url', 'video_url', 'notes_url', 'cover_image',
+    ];
+
+    public static function url_validation_rules() {
+        $rules = [];
+        foreach(self::$URL_PROPERTIES as $property) {
+            $rules[$property] = ['nullable', function($attribute, $value, $fail) {
+                foreach(explode(' ', (string)$value) as $url) {
+                    if(\App\Helpers\Uri::has_unsafe_scheme($url))
+                        return $fail(__('event_form.url_must_be_http', ['field' => __('event_form.url_field_names.'.$attribute)]));
+                }
+            }];
+        }
+        return $rules;
+    }
+
+    // Removes links that aren't http or https, for events built from imported data
+    public function remove_unsafe_urls() {
+        foreach(self::$URL_PROPERTIES as $property) {
+            if($this->{$property} && \App\Helpers\Uri::has_unsafe_scheme($this->{$property}))
+                $this->{$property} = null;
+        }
+    }
+
     public static $EDITABLE_PROPERTIES = [
         'name', 'start_date', 'end_date', 'start_time', 'end_time',
         'location_name', 'location_address', 'location_locality', 'location_region', 'location_country',
         'latitude', 'longitude', 'timezone', 'status',
         'website', 'tickets_url', 'code_of_conduct_url', 'meeting_url', 'video_url', 'notes_url',
         'summary', 'description', 'cover_image', 'unlisted', 'parent_id', 'hide_from_main_feed',
-        'recurrence_interval',
+        'recurrence_interval', 'recurrence_interval_count',
     ];
 
+    // Keeps letters and numbers from any script, so names that aren't written in the Latin
+    // alphabet still get a readable slug, e.g. "Москва встреча" becomes "москва-встреча".
+    // Normalizer comes from symfony/polyfill-intl-normalizer when intl isn't installed,
+    // so a name gets the same slug on every server.
     public static function slug_from_name($name) {
-        return preg_replace('/--+/', '-', mb_ereg_replace('[^a-z0-9à-öø-ÿāăąćĉċčŏœ]+', '-', mb_strtolower($name)));
+        $name = \Normalizer::normalize((string)$name, \Normalizer::FORM_C) ?: (string)$name;
+
+        // preg_replace returns null for text that isn't valid UTF-8
+        return trim(preg_replace('/[^\p{L}\p{M}\p{N}]+/u', '-', mb_strtolower($name)) ?? '', '-');
     }
 
     public static function find_from_url($url) {
@@ -52,14 +92,24 @@ class Event extends Model
         }
     }
 
+    /**
+     * The column holding the id that responses, photos and revisions hang off.
+     *
+     * An EventRevision is a snapshot of an event's own fields, so it points these
+     * relations at the event it was taken from rather than at its own primary key.
+     */
+    public function eventKeyName() {
+        return $this->getKeyName();
+    }
+
     public function responses() {
-        return $this->hasMany('\App\Response')
+        return $this->hasMany('\App\Response', 'event_id', $this->eventKeyName())
             ->where('approved', true)
             ->orderBy('created_at', 'desc');
     }
 
     public function pending_responses() {
-        return $this->hasMany('\App\Response')
+        return $this->hasMany('\App\Response', 'event_id', $this->eventKeyName())
             ->where('approved', false)
             ->orderBy('created_at', 'desc');
     }
@@ -70,12 +120,12 @@ class Event extends Model
     }
 
     public function revisions() {
-        return $this->hasMany('\App\EventRevision')
+        return $this->hasMany('\App\EventRevision', 'event_id', $this->eventKeyName())
             ->orderBy('created_at', 'desc');
     }
 
     public function photos() {
-        return $this->hasManyThrough('\App\ResponsePhoto', '\App\Response')
+        return $this->hasManyThrough('\App\ResponsePhoto', '\App\Response', 'event_id', 'response_id', $this->eventKeyName(), 'id')
             ->where('approved', true)
             ->orderBy('sort_order', 'asc')
             ->orderBy('response_photos.created_at', 'desc');
@@ -99,7 +149,7 @@ class Event extends Model
     }
 
     public function tags() {
-        return $this->belongsToMany('\App\Tag');
+        return $this->belongsToMany('\App\Tag', 'event_tag', 'event_id', 'tag_id', $this->eventKeyName(), 'id');
     }
 
     public function getTagListAttribute() {
@@ -130,7 +180,7 @@ class Event extends Model
     }
 
     public function children() {
-        return $this->hasMany('\App\Event', 'parent_id')
+        return $this->hasMany('\App\Event', 'parent_id', $this->eventKeyName())
             ->orderBy('sort_date', 'asc');
     }
 
@@ -193,7 +243,7 @@ class Event extends Model
 
     public function permalink() {
         $date = new DateTime($this->start_date);
-        return '/' . $date->format('Y') . '/' . $date->format('m') . '/' . ($this->slug ? $this->slug.'-' : '') . $this->key;
+        return '/' . $date->format('Y') . '/' . $date->format('m') . '/' . ($this->slug ? rawurlencode($this->slug).'-' : '') . $this->key;
     }
 
     public function ics_permalink() {
@@ -201,8 +251,7 @@ class Event extends Model
     }
 
     public function tag_feed_ics_link() {
-        $tag = $this->tags[0]->tag;
-        return route('ics-tag-preview', $tag);
+        return route('ics-tag-preview', $this->tag_list[0]);
     }
 
     public function absolute_permalink() {
@@ -250,38 +299,36 @@ class Event extends Model
             $end_date = new DateTime($this->end_date);
 
             if($start_date->format('Y') != $end_date->format('Y')) {
-                $start_text = $start_date->format('M j, Y');
-                $end_text = $end_date->format('M j, Y');
-            } elseif($start_date->format('F') == $end_date->format('F')) {
-                $start_text = $start_date->format('M j');
-                $end_text = $end_date->format('j, Y');
+                $start_text = Dates::format($start_date, 'date');
+                $end_text = Dates::format($end_date, 'date');
+            } elseif($start_date->format('m') == $end_date->format('m')) {
+                $start_text = Dates::format($start_date, 'month_day');
+                $end_text = Dates::format($end_date, 'day_year');
             } else {
-                $start_text = $start_date->format('M j');
-                $end_text = $end_date->format('M j, Y');
+                $start_text = Dates::format($start_date, 'month_day');
+                $end_text = Dates::format($end_date, 'date');
             }
 
-            return '<time datetime="'.$start_date->format('Y-m-d').'">'
-                    . $start_text
-                    . '</time> - '
-                    . '<time datetime="'.$end_date->format('Y-m-d').'">'
-                    . $end_text
-                    . '</time>';
+            return __('dates.range', [
+                'start' => '<time datetime="'.$start_date->format('Y-m-d').'">'.e($start_text).'</time>',
+                'end' => '<time datetime="'.$end_date->format('Y-m-d').'">'.e($end_text).'</time>',
+            ]);
 
         } else {
             if($this->start_time) {
                 $start = $this->start_datetime();
                 if($this->timezone) {
-                    $tzattrs = 'class="has-tooltip-bottom event-localize-date '.(!$this->has_physical_location() ? 'is-virtual-event' : '').'" data-timezone="'.$this->timezone.'" data-original-date="'.$start->format('M j, Y g:ia').'" data-dateformat="full"';
+                    $tzattrs = 'class="has-tooltip-bottom event-localize-date '.(!$this->has_physical_location() ? 'is-virtual-event' : '').'" data-timezone="'.$this->timezone.'" data-original-date="'.e(Dates::format($start, 'datetime')).'" data-dateformat="full"';
                 } else {
                     $tzattrs = '';
                 }
                 return '<time datetime="'.$start->format('c').'" '.$tzattrs.'>'
-                        . $start->format('M j, Y').' '.$start->format('g:ia')
+                        . e(Dates::format($start, 'datetime'))
                         . ($this->has_physical_location() ? ' ('.$this->timezone.')' : '')
                         . '</time>';
             } else {
                 return '<time datetime="'.$start_date->format('Y-m-d').'">'
-                        . $start_date->format('M j, Y')
+                        . e(Dates::format($start_date, 'date'))
                         . '</time>';
             }
         }
@@ -327,22 +374,32 @@ class Event extends Model
         return $end;
     }
 
-    public function display_date() {
+    // e.g. "June 17, 2031", or "Tuesday, June 17, 2031" with the weekday
+    public function display_date($with_weekday = false) {
         $start_date = new DateTime($this->start_date);
 
         if($this->is_multiday()) {
             $end_date = new DateTime($this->end_date);
 
-            if($start_date->format('Y') != $end_date->format('Y')) {
-                return $start_date->format('F j, Y') . ' - ' . $end_date->format('F j, Y');
-            } elseif($start_date->format('F') == $end_date->format('F')) {
-                return $start_date->format('F j') . ' - ' . $end_date->format('j, Y');
+            if($with_weekday) {
+                // Each end of the range names its own weekday, so the month is repeated too
+                $start_format = $start_date->format('Y') != $end_date->format('Y') ? 'date_full' : 'weekday_month_day_long';
+                $end_format = 'date_full';
+            } elseif($start_date->format('Y') != $end_date->format('Y')) {
+                $start_format = 'date_long';
+                $end_format = 'date_long';
+            } elseif($start_date->format('m') == $end_date->format('m')) {
+                $start_format = 'month_day_long';
+                $end_format = 'day_year';
             } else {
-                return $start_date->format('F j') . ' - ' . $end_date->format('F j, Y');
+                $start_format = 'month_day_long';
+                $end_format = 'date_long';
             }
 
+            return __('dates.range', ['start' => Dates::format($start_date, $start_format), 'end' => Dates::format($end_date, $end_format)]);
+
         } else {
-            return $start_date->format('F j, Y');
+            return Dates::format($start_date, $with_weekday ? 'date_full' : 'date_long');
         }
     }
 
@@ -354,13 +411,14 @@ class Event extends Model
 
         if($this->end_time) {
             $end_time = new DateTime($this->end_time);
+            // Leave out am/pm on the start time when it's the same as the end time's
             if($start_time->format('a') == $end_time->format('a'))
-                $start_format = 'g:i';
+                $start_format = 'time_no_meridiem';
             else
-                $start_format = 'g:ia';
-            $str = $start_time->format($start_format) . ' - ' . $end_time->format('g:ia');
+                $start_format = 'time';
+            $str = __('dates.range', ['start' => Dates::format($start_time, $start_format), 'end' => Dates::format($end_time, 'time')]);
         } else {
-            $str = $start_time->format('g:ia');
+            $str = Dates::format($start_time, 'time');
         }
 
         return $str;
@@ -376,7 +434,7 @@ class Event extends Model
 
     public function weekday() {
         $start_date = new DateTime($this->start_date);
-        return $start_date->format('D');
+        return Dates::format($start_date, 'weekday_short');
     }
 
     public function start_and_end_dates() {
@@ -413,24 +471,76 @@ class Event extends Model
         return $start_html . $end_html;
     }
 
+    /**
+     * Which occurrence of its own weekday the date is within its month, 1 through 5.
+     *
+     * The 17th of a month is always in the third group of seven days, so it is the
+     * third occurrence of whichever weekday it falls on.
+     */
+    public static function week_of_month(DateTime $date) {
+        return (int)ceil((int)$date->format('j') / 7);
+    }
+
+    /**
+     * The same thing counted backwards, where 1 is the last occurrence of that
+     * weekday in the month, 2 the second to last, and so on.
+     */
+    public static function weeks_from_end_of_month(DateTime $date) {
+        return (int)floor(((int)$date->format('t') - (int)$date->format('j')) / 7) + 1;
+    }
+
+    // e.g. "3rd Tuesday"
+    public static function day_of_week_ordinal_label(DateTime $date) {
+        return __('recurrence.nth_weekday', [
+            'ordinal' => __('recurrence.ordinals.'.self::week_of_month($date)),
+            'weekday' => Dates::format($date, 'weekday'),
+        ]);
+    }
+
+    // e.g. "last Friday" or "2nd last Friday"
+    public static function day_of_week_from_end_label(DateTime $date) {
+        $weeks = self::weeks_from_end_of_month($date);
+
+        if($weeks == 1)
+            return __('recurrence.last_weekday', ['weekday' => Dates::format($date, 'weekday')]);
+
+        return __('recurrence.nth_last_weekday', [
+            'ordinal' => __('recurrence.ordinals.'.$weeks),
+            'weekday' => Dates::format($date, 'weekday'),
+        ]);
+    }
+
     public function recurrence_description() {
         if(!$this->recurrence_interval)
             return '';
 
         $start = new DateTime($this->start_date);
+        $weekdays = __('recurrence.weekdays.'.$start->format('w'));
 
         switch($this->recurrence_interval) {
             case 'weekly_dow':
-                return 'Every week on '.$start->format('l').'s';
+                return __('recurrence.description.weekly', ['weekdays' => $weekdays]);
             case 'biweekly_dow':
-                return 'Every other week on '.$start->format('l').'s';
+                return __('recurrence.description.biweekly', ['weekdays' => $weekdays]);
+            case 'weekly_n':
+                $weeks = (int)$this->recurrence_interval_count ?: 1;
+                return trans_choice('recurrence.description.every_n_weeks', $weeks, ['weekdays' => $weekdays]);
             case 'monthly_date':
-                return 'Every month on the '.$start->format('dS');
+                return __('recurrence.description.monthly_date', ['day' => Dates::format($start, 'day_ordinal')]);
+            case 'monthly_dow':
+                return __('recurrence.description.monthly_dow', ['position' => self::day_of_week_ordinal_label($start)]);
+            case 'monthly_dow_last':
+                return __('recurrence.description.monthly_dow', ['position' => self::day_of_week_from_end_label($start)]);
             case 'yearly':
-                return 'Every year on '.$start->format('d');
+                return __('recurrence.description.yearly', ['date' => Dates::format($start, 'month_day')]);
         }
     }
 
+    /**
+     * The fixed gap between occurrences, or null for the schedules that don't have
+     * one. "The last Friday of the month" lands 28 or 35 days apart depending on
+     * the month, so those are worked out a month at a time in recurrence_dates().
+     */
     public function recurrence_date_interval() {
         if(!$this->recurrence_interval)
             return null;
@@ -440,11 +550,15 @@ class Event extends Model
                 return new DateInterval('P1W');
             case 'biweekly_dow':
                 return new DateInterval('P2W');
+            case 'weekly_n':
+                return new DateInterval('P'.((int)$this->recurrence_interval_count ?: 1).'W');
             case 'monthly_date':
                 return new DateInterval('P1M');
             case 'yearly':
                 return new DateInterval('P1Y');
         }
+
+        return null;
     }
 
     public function recurrence_end_datetime() {
@@ -458,34 +572,125 @@ class Event extends Model
                 return $now->add(new DateInterval('P5W'));
             case 'biweekly_dow':
                 return $now->add(new DateInterval('P9W'));
+            case 'weekly_n':
+                return $now->add(new DateInterval('P'.(((int)$this->recurrence_interval_count ?: 1) * 5).'W'));
             case 'monthly_date':
+            case 'monthly_dow':
+            case 'monthly_dow_last':
                 return $now->add(new DateInterval('P4M'));
             case 'yearly':
                 return $now->add(new DateInterval('P2Y'));
         }
+
+        return null;
+    }
+
+    /**
+     * Every date this event recurs on between its start and the end of the window
+     * we schedule ahead.
+     */
+    public function recurrence_dates(?DateTime $until = null) {
+        $start = $this->start_datetime();
+        $end = $this->recurrence_end_datetime();
+
+        if(!$end)
+            return [];
+
+        // Allow looking further ahead than the window occurrences are created in
+        if($until && $until > $end)
+            $end = $until;
+
+        if($interval = $this->recurrence_date_interval())
+            return iterator_to_array(new DatePeriod($start, $interval, $end));
+
+        if(in_array($this->recurrence_interval, ['monthly_dow', 'monthly_dow_last']))
+            return $this->monthly_day_of_week_dates($start, $end);
+
+        return [];
+    }
+
+    /**
+     * Walks month by month picking out the same weekday position the series
+     * started on, counting either from the start or the end of the month.
+     */
+    private function monthly_day_of_week_dates(DateTime $start, DateTime $end) {
+        $weekday = (int)$start->format('w');
+        $from_end = $this->recurrence_interval == 'monthly_dow_last';
+
+        $position = $from_end
+            ? self::weeks_from_end_of_month($start)
+            : self::week_of_month($start);
+
+        $dates = [];
+        $month = (clone $start)->modify('first day of this month');
+
+        while($month <= $end) {
+            $day = $from_end
+                ? self::day_of_nth_weekday_from_end($month, $weekday, $position)
+                : self::day_of_nth_weekday($month, $weekday, $position);
+
+            if($day) {
+                // Keep the time and timezone the series was defined with
+                $date = (clone $start)->setDate((int)$month->format('Y'), (int)$month->format('n'), $day);
+
+                if($date >= $start && $date <= $end)
+                    $dates[] = $date;
+            }
+
+            $month->modify('first day of next month');
+        }
+
+        return $dates;
+    }
+
+    /**
+     * The day of the month the Nth given weekday falls on, or null when the month
+     * has no Nth one, which happens for a fifth weekday in most months.
+     */
+    private static function day_of_nth_weekday(DateTime $month, $weekday, $n) {
+        $first = (clone $month)->modify('first day of this month');
+
+        $day = 1 + (($weekday - (int)$first->format('w') + 7) % 7) + ($n - 1) * 7;
+
+        return $day <= (int)$first->format('t') ? $day : null;
+    }
+
+    /**
+     * The same, counting back from the end of the month.
+     */
+    private static function day_of_nth_weekday_from_end(DateTime $month, $weekday, $n) {
+        $last = (clone $month)->modify('last day of this month');
+
+        $day = (int)$last->format('j') - (((int)$last->format('w') - $weekday + 7) % 7) - ($n - 1) * 7;
+
+        return $day >= 1 ? $day : null;
     }
 
     public function create_upcoming_recurrences() {
         // Find the next events to schedule out over the next N weeks
-        $interval = $this->recurrence_date_interval();
         $start = $this->start_datetime();
         $now = new DateTime();
+        $end = $this->recurrence_end_datetime();
 
         Log::info($this->name);
         Log::info('Series starts: '.$start->format('Y-m-d'));
         Log::info('Recurrence: '.$this->recurrence_interval);
 
-        $end = $this->recurrence_end_datetime();
+        if(!$end) {
+            Log::warning('  No schedule for this template, skipping');
+            return;
+        }
 
         Log::info('Today: '.$now->format('Y-m-d'));
         Log::info('Target end date: '.$end->format('Y-m-d'));
 
-        $period = new DatePeriod($start, $interval, $end);
-
-        foreach($period as $date) {
+        foreach($this->recurrence_dates() as $date) {
             if($date >= $now) {
-                $exists = Event::where('created_from_template_event_id', $this->id)
-                  ->where('start_date', $date->format('Y-m-d'))
+                // Look for an occurrence created for this date, even if it has since been
+                // moved to another date or deleted, so it isn't created again
+                $exists = Event::withTrashed()
+                  ->where('created_from_template_event_id', $this->id)
+                  ->where('created_from_template_date', $date->format('Y-m-d'))
                   ->count();
                 if($exists == 0) {
                     Log::info('  Creating instance on '.$date->format('Y-m-d'));
@@ -493,16 +698,19 @@ class Event extends Model
                     $copy = $this->replicate();
                     $copy->generate_random_values();
                     $copy->created_from_template_event_id = $this->id;
+                    $copy->created_from_template_date = $date->format('Y-m-d');
                     $copy->start_date = $date->format('Y-m-d');
                     $copy->is_template = false;
                     $copy->recurrence_interval = null;
+                    $copy->recurrence_interval_count = null;
                     $copy->sort_date = $copy->sort_date();
                     $copy->reset_live_event_stats();
 
-                    // Replace any YYYY-mm-dd dates in the description or URL properties
-                    $copy->replace_date($this, 'description');
-                    $copy->replace_date($this, 'notes_url');
-                    $copy->replace_date($this, 'website');
+                    // Move the end date along with the start date, and replace the template's
+                    // YYYY-mm-dd date in the description and URL properties
+                    foreach(['end_date', 'description', 'notes_url', 'website'] as $property) {
+                        $copy->{$property} = self::occurrence_value($this->getAttributes(), $property, $date);
+                    }
 
                     $copy->save();
 
@@ -516,6 +724,89 @@ class Event extends Model
         }
     }
 
+    /**
+     * Applies a template's changes to its upcoming occurrences after the template is saved.
+     *
+     * Occurrences that are no longer on the schedule are deleted. The rest keep their
+     * URL, RSVPs and responses, and pick up each changed property unless it was edited
+     * on the occurrence itself, meaning it no longer matches what the template's previous
+     * values gave it. Then any newly scheduled dates get occurrences.
+     */
+    public function sync_upcoming_recurrences(array $previous, array $previous_tags) {
+        $today = date('Y-m-d');
+
+        $occurrences = Event::where('created_from_template_event_id', $this->id)
+            ->where('start_date', '>', $today)
+            ->with('tags')
+            ->get();
+
+        $latest = $occurrences->map(function($o){ return $o->created_from_template_date ?: $o->start_date; })->max();
+        $scheduled = array_map(function($date){
+            return $date->format('Y-m-d');
+        }, $this->recurrence_dates($latest ? new DateTime($latest.' 23:59:59') : null));
+
+        $current = $this->fresh()->getAttributes();
+        $current_tags = $this->tags()->get();
+        $properties = array_diff(self::$EDITABLE_PROPERTIES, ['start_date', 'recurrence_interval', 'recurrence_interval_count']);
+
+        $normalize = function($value) {
+            return $value === null ? '' : (string)$value;
+        };
+
+        foreach($occurrences as $occurrence) {
+            $scheduled_date = $occurrence->created_from_template_date ?: $occurrence->start_date;
+
+            if(!in_array($scheduled_date, $scheduled)) {
+                Log::info('  Removing occurrence on '.$scheduled_date.' that is no longer on the schedule');
+                // Forget the date so the occurrence is created again if the schedule changes back
+                $occurrence->created_from_template_date = null;
+                $occurrence->save();
+                $occurrence->delete();
+                continue;
+            }
+
+            $date = new DateTime($scheduled_date);
+            $moved = $occurrence->start_date != $scheduled_date;
+            $changed = [];
+
+            foreach($properties as $property) {
+                // A moved occurrence keeps the dates it was moved to
+                if($property == 'end_date' && $moved)
+                    continue;
+
+                $old_value = self::occurrence_value($previous, $property, $date);
+                $new_value = self::occurrence_value($current, $property, $date);
+
+                if($normalize($old_value) !== $normalize($new_value)
+                    && $normalize($occurrence->{$property}) === $normalize($old_value)) {
+                    $occurrence->{$property} = $new_value;
+                    $changed[] = $property;
+                }
+            }
+
+            $occurrence_tags = $occurrence->tags->pluck('tag')->sort()->values()->all();
+            $new_tags = $current_tags->pluck('tag')->sort()->values()->all();
+            $old_tags = collect($previous_tags)->sort()->values()->all();
+
+            if($old_tags != $new_tags && $occurrence_tags == $old_tags) {
+                $occurrence->tags()->sync($current_tags->pluck('id')->all());
+                $changed[] = 'tags';
+            }
+
+            if($changed) {
+                $occurrence->sort_date = $occurrence->sort_date();
+                $occurrence->save();
+
+                $revision = EventRevision::createFromEvent($occurrence);
+                // Stored and shown to everyone, so in the site's language rather than the editor's
+                $revision->edit_summary = __('recurrence.updated_from_template', [], \App\Helpers\Locales::site());
+                $revision->save();
+            }
+        }
+
+        $this->create_upcoming_recurrences();
+    }
+
     public function delete_upcoming_recurrences() {
         $date = new DateTime();
         Event::where('created_from_template_event_id', $this->id)
@@ -523,14 +814,43 @@ class Event extends Model
             ->delete();
     }
 
-    private function replace_date($template_event, $property) {
-        $this->{$property} = str_replace($template_event->start_datetime()->format('Y-m-d'), $this->start_datetime()->format('Y-m-d'), $template_event->{$property});
+    /**
+     * The value an occurrence scheduled on $date gets for a property, given a template's
+     * attributes. Multi-day occurrences keep the template's length, and the template's
+     * date is replaced with the occurrence's date in the description and links.
+     */
+    public static function occurrence_value(array $template, $property, DateTime $date) {
+        $value = $template[$property] ?? null;
+
+        if($value === null || $value === '' || empty($template['start_date']))
+            return $value;
+
+        $template_date = (new DateTime($template['start_date']))->format('Y-m-d');
+        $occurrence_date = $date->format('Y-m-d');
+
+        switch($property) {
+            case 'end_date':
+                $days = (int)(new DateTime($template_date))->diff(new DateTime($value))->format('%r%a');
+                return (new DateTime($occurrence_date))->modify(sprintf('%+d days', $days))->format('Y-m-d');
+
+            case 'description':
+            case 'notes_url':
+            case 'website':
+                return str_replace($template_date, $occurrence_date, $value);
+        }
+
+        return $value;
     }
 
     public function reset_live_event_stats() {
         $this->current_participants = 0;
         $this->max_participants = 0;
         $this->notification_sent = 0;
+    }
+
+    // The meeting link is only shared from 15 minutes before the event starts until it's over
+    public function meeting_url_is_visible() {
+        return $this->meeting_url && !$this->is_past() && ($this->is_starting_soon() || $this->is_ongoing());
     }
 
     public function is_starting_soon() {
@@ -629,7 +949,7 @@ class Event extends Model
         if($this->meeting_url && $this->is_ongoing()) {
             $icon = 'play-circle';
             $class = 'success';
-            $text = 'Live Now';
+            $text = __('events.status.live_now');
         } else if($this->status == 'confirmed') {
             return '';
         }
@@ -638,33 +958,40 @@ class Event extends Model
             case 'cancelled':
               $icon = 'exclamation-triangle';
               $class = 'danger';
-              $text = 'Cancelled';
+              $text = self::status_label('cancelled');
               break;
             case 'postponed':
               $icon = 'question-circle';
               $class = 'warning';
-              $text = 'Postponed';
+              $text = self::status_label('postponed');
               break;
             case 'tentative':
               $icon = 'question-circle';
               $class = 'warning';
-              $text = 'Tentative';
+              $text = self::status_label('tentative');
               break;
+            default:
+              return '';
         }
 
         return '<span class="status tag is-'.$class.'">'
             .'<svg class="svg-icon" style="margin-right:5px;"><use xlink:href="/font-awesome-5.11.2/sprites/solid.svg#'.$icon.'"></use></svg>'
-            .substr(strtoupper($text), 0, 1)
-            .'<span class="lower">'.substr(strtoupper($text), 1).'</span>'
+            .e(mb_substr(mb_strtoupper($text), 0, 1))
+            .'<span class="lower">'.e(mb_substr(mb_strtoupper($text), 1)).'</span>'
             .'<span class="hidden">:</span>'
             .'</span> ';
+    }
+
+    // The name of a status, like "Cancelled", or the status itself if it isn't one of $STATUSES
+    public static function status_label($status) {
+        return isset(self::$STATUSES[$status]) ? __('events.status.'.$status) : $status;
     }
 
     public function status_text() {
         if($this->status == 'confirmed')
             return '';
 
-        return strtoupper($this->status).': ';
+        return mb_strtoupper(self::status_label($this->status)).': ';
     }
 
     public function location_summary() {
@@ -866,7 +1193,8 @@ class Event extends Model
             ];
         }
 
-        return json_encode($data, JSON_PRETTY_PRINT+JSON_UNESCAPED_SLASHES);
+        // This is output inside a script tag, so escape anything that could end it
+        return json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
     }
 
     public function cover_image_absolute_url() {

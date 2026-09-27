@@ -11,6 +11,7 @@ use Illuminate\Support\Str;
 
 class GitHubController extends BaseController
 {
+    use CompletesOAuthLogin;
 
     public static function githubAuthURL() {
         $state = bin2hex(random_bytes(16));
@@ -28,17 +29,17 @@ class GitHubController extends BaseController
     }
 
     public function callback() {
-        if(request('state') != session('GITHUB_OAUTH_STATE')) {
+        if(!$this->validState('GITHUB_OAUTH_STATE')) {
             return view('auth/oauth-error', [
-                'error' => 'Invalid OAuth State',
-                'error_description' => 'There was a problem with the login process. Double check you are allowing cookies from this domain and try again.',
+                'error' => __('login.errors.invalid_state'),
+                'error_description' => __('login.errors.invalid_state_description'),
             ]);
         }
 
         if(!request('code')) {
             return view('auth/oauth-error', [
-                'error' => 'OAuth Error',
-                'error_description' => 'The GitHub login process did not complete successfully. Please try again.',
+                'error' => __('login.errors.oauth_error'),
+                'error_description' => __('login.errors.not_completed', ['provider' => 'GitHub']),
             ]);
         }
 
@@ -60,8 +61,8 @@ class GitHubController extends BaseController
 
         if(!isset($data['access_token'])) {
             return view('auth/oauth-error', [
-                'error' => 'OAuth Error',
-                'error_description' => 'Unable to get an access token from GitHub. Please try again.',
+                'error' => __('login.errors.oauth_error'),
+                'error_description' => __('login.errors.no_access_token', ['provider' => 'GitHub']),
             ]);
         }
 
@@ -80,8 +81,8 @@ class GitHubController extends BaseController
 
         if(!isset($userdata['id'])) {
             return view('auth/oauth-error', [
-                'error' => 'OAuth Error',
-                'error_description' => 'Unable to get user info from GitHub. Please try again.',
+                'error' => __('login.errors.oauth_error'),
+                'error_description' => __('login.errors.no_user_info', ['provider' => 'GitHub']),
             ]);
         }
 
@@ -90,8 +91,8 @@ class GitHubController extends BaseController
             $allowedUsers = explode(' ', env('GITHUB_ALLOWED_USERS'));
             if(!in_array($userdata['login'], $allowedUsers)) {
                 return view('auth/oauth-error', [
-                    'error' => 'User Not Allowed',
-                    'error_description' => 'Sorry, you are not in the list of allowed users for this website.',
+                    'error' => __('login.errors.not_allowed'),
+                    'error_description' => __('login.errors.not_in_allowed_users'),
                 ]);
             }
         }
@@ -117,16 +118,8 @@ class GitHubController extends BaseController
 
         $user->save();
 
-        // Now set the session data to make this user logged-in
-        session([
-            'GITHUB_USER' => $userdata['html_url'],
-        ]);
-
-        if(session('AUTH_RETURN_TO')) {
-            return redirect(session('AUTH_RETURN_TO'));
-        } else {
-            return redirect('/');
-        }
+        // Now make this user logged-in
+        return $this->redirectAfterLogin('GITHUB_USER', $userdata['html_url']);
     }
 
 }

@@ -9,7 +9,6 @@ use App\Event, App\Response, App\User, App\Setting;
 use App\Events\WebmentionReceived;
 use Illuminate\Support\Str;
 use Auth;
-use p3k\XRay;
 
 
 class WebmentionController extends BaseController
@@ -25,29 +24,29 @@ class WebmentionController extends BaseController
 
         $targetURLHost = parse_url($targetURL, PHP_URL_HOST);
         if(!$targetURLHost) {
-            return $this->error('Invalid target URL');
+            return $this->error(__('responses.webmention.invalid_target'));
         }
 
         $event = Event::find_from_url($targetURL);
 
         if(!$event) {
-            return $this->error('Target URL was not a valid event URL. Webmentions are only supported to event URLs.', 200);
+            return $this->error(__('responses.webmention.target_not_event'), 200);
         }
 
         if($event->status == 'cancelled') {
-            return $this->error('Webmentions are not accepted to cancelled events', 200);
+            return $this->error(__('responses.webmention.event_cancelled'), 200);
         }
 
         $sourceURL = request('source');
 
-        $xray = new XRay();
+        $xray = \App\Helpers\SafeHTTP::xray();
         $data = $xray->parse($sourceURL, [
             'target' => $targetURL,
         ]);
 
         // XRay tells us if the URL didn't link to the target
         if(isset($data['error'])) {
-            return $this->error($data['error_description']);
+            return $this->error(\App\Helpers\SafeHTTP::xray_error_description($data));
         }
 
         // Handle redirects from source URLs
@@ -65,7 +64,7 @@ class WebmentionController extends BaseController
                   ->where('source_url', $sourceURL)->delete();
                 return response()->json([
                     'result' => 'updated',
-                    'description' => 'This source URL redirected to a response that has already been received so this response was deleted'
+                    'description' => __('responses.webmention.redirected_duplicate')
                 ]);
             } else {
                 // Check if a webmention has already been received from the old URL
@@ -86,13 +85,13 @@ class WebmentionController extends BaseController
         $source = $data['data'];
 
         if(!is_array($source)) {
-            return $this->error("There was a problem parsing the source URL");
+            return $this->error(__('responses.webmention.parse_problem'));
         }
 
         // Drop reposts of everything, including reposts of the event and also of responses to the event
         if(isset($source['post-type']) && $source['post-type'] == 'repost') {
             if(request('from') == 'browser') {
-                return $this->error('Reposts are not accepted');
+                return $this->error(__('responses.webmention.reposts_not_accepted'));
             } else {
                 return response()->json([
                     'result' => 'rejected',
@@ -110,17 +109,19 @@ class WebmentionController extends BaseController
         } else {
             if($response->trashed()) {
                 // Don't allow deleted source URLs to be re-added
-                return $this->error("The webmention from this URL has been deleted from the event and won't be added again");
+                return $this->error(__('responses.webmention.deleted'));
             }
         }
 
         // Reset approval on updates, requiring moderation again
         $response->approved = false;
 
-        // If the webmention is from a user who has logged in, approve it immediately
+        // If the webmention is from a user who has logged in, approve it immediately.
+        // The source has to be within the user's URL, not just on the same host, so a
+        // user whose URL is https://github.com/someone doesn't approve every GitHub page.
         $users = User::where('url', 'like', '%'.parse_url($sourceURL, PHP_URL_HOST).'%')->get();
         foreach($users as $user) {
-            if(\p3k\url\host_matches($sourceURL, $user->url)) {
+            if(\App\Helpers\Uri::url_is_under($sourceURL, $user->url)) {
                 $response->approved = true;
                 $response->approved_at = date('Y-m-d H:i:s');
             }
@@ -142,7 +143,7 @@ class WebmentionController extends BaseController
                 'data' => json_decode($response->data),
             ];
             if($response->approved == false) {
-                $data['status'] = 'Your webmention was received, but was not automatically approved. If you log in with the same domain as your RSVP, it will be automatically approved in the future.';
+                $data['status'] = __('responses.webmention.not_approved');
             }
             return response()->json($data);
         }

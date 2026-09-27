@@ -1,8 +1,4 @@
 <?php
-use Laragear\WebAuthn\WebAuthn;
-
-WebAuthn::routes();
-
 // Check whether setup has been completed and define installer routes if not
 if(defined('MEETABLE_SETUP')):
 
@@ -68,6 +64,8 @@ Route::middleware('slashes:remove')->group(function(){
 
     Route::get('/local-time', 'Controller@local_time')->name('local_time');
 
+    Route::get('/language/{locale}', 'Controller@set_language')->name('set-language');
+
     Route::get('/webmention', 'WebmentionController@get');
     Route::post('/webmention', 'WebmentionController@webmention')->name('webmention');
 
@@ -76,6 +74,7 @@ Route::middleware('slashes:remove')->group(function(){
     Route::get('/login', 'Auth\AuthController@login')->name('login');
     Route::get('/logout', 'Auth\AuthController@logout')->name('logout');
     Route::post('/auth/create-user', 'Auth\AuthController@create_user')->name('create-user');
+    Route::get('/auth/passkey-link/{user}', 'Auth\AuthController@passkey_link')->middleware('signed')->name('passkey-link');
     Route::get('/auth/github', 'Auth\GitHubController@callback')->name('github-oauth-redirect');
     Route::get('/auth/heroku', 'Auth\HerokuController@callback')->name('heroku-oauth-redirect');
     Route::get('/auth/discord', 'Auth\DiscordController@callback')->name('discord-oauth-redirect');
@@ -86,7 +85,7 @@ Route::middleware('slashes:remove')->group(function(){
     Route::get('/{key}', 'Controller@event_shorturl');
 });
 
-Route::middleware('auth')->middleware('slashes:remove')->group(function(){
+Route::middleware(['auth', 'slashes:remove'])->group(function(){
 
     Route::get('/new', 'EventController@new_event')->name('new-event');
     Route::get('/import', 'EventController@import_event')->name('import-event');
@@ -129,6 +128,15 @@ Route::middleware('auth')->middleware('slashes:remove')->group(function(){
         Route::get('/settings', 'SettingsController@get')->name('settings');
         Route::post('/settings/save', 'SettingsController@post')->name('settings-save');
     });
+
+    Route::get('/discord', 'DiscordNotificationController@index')->name('discord-notifications');
+    Route::get('/discord/install/start', 'DiscordNotificationController@install')->name('discord-install');
+    Route::get('/discord/install', 'DiscordNotificationController@install_callback')->name('discord-install-callback');
+    Route::get('/discord/new', 'DiscordNotificationController@new_notification')->name('new-discord-notification');
+    Route::post('/discord/save', 'DiscordNotificationController@save_notification')->name('save-discord-notification');
+    Route::get('/discord/{notification}', 'DiscordNotificationController@edit_notification')->whereNumber('notification')->name('edit-discord-notification');
+    Route::post('/discord/{notification}/delete', 'DiscordNotificationController@delete_notification')->whereNumber('notification')->name('delete-discord-notification');
+    Route::post('/discord/{notification}/test', 'DiscordNotificationController@test_notification')->whereNumber('notification')->name('test-discord-notification');
 
     Route::get('/profile', 'UserController@profile')->name('profile');
     Route::post('/profile/refresh', 'UserController@refresh_profile')->name('profile-refresh');

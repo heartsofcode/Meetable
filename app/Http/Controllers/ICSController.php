@@ -10,6 +10,7 @@ use App\Event, App\Tag, App\Setting;
 use DateTime, DateTimeZone, DateInterval;
 use DB, Log;
 use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\HeaderUtils;
 
 class ICSController extends BaseController
 {
@@ -138,6 +139,7 @@ class ICSController extends BaseController
     public function index(Request $request) {
         $events = Event::orderBy('start_date', 'desc')
             ->where('unlisted', 0)
+            ->where('is_template', 0)
             ->get();
 
         $vCalendar = new \Eluceo\iCal\Component\Calendar(parse_url(env('APP_URL'), PHP_URL_HOST));
@@ -157,7 +159,7 @@ class ICSController extends BaseController
     public function tag(Request $request, $tag) {
         $tags = [];
         foreach(explode(',', $tag) as $t) {
-            $tags[] = Tag::get($t);
+            $tags[] = Tag::lookup($t);
         }
 
         $events = Event::where('unlisted', 0)
@@ -175,9 +177,17 @@ class ICSController extends BaseController
 
         $ics = $vCalendar->render();
 
+        // Tags can use any script, so the filename also has an ASCII version for older clients
+        $names = array_map(function($t){ return $t->tag; }, $tags);
+        $ascii_names = array_filter(array_map(function($name){
+            return trim(preg_replace('/[^A-Za-z0-9-]+/', '', $name), '-');
+        }, $names));
+        $filename = 'events-'.implode(',', $names).'.ics';
+        $ascii_filename = $ascii_names ? 'events-'.implode(',', $ascii_names).'.ics' : 'events.ics';
+
         return response($ics)->withHeaders([
             'Content-Type' => 'text/calendar; charset=utf-8',
-            'Content-Disposition' => 'attachment; filename="events-'.$tag.'.ics"'
+            'Content-Disposition' => HeaderUtils::makeDisposition('attachment', $filename, $ascii_filename),
         ]);
     }
 

@@ -2,6 +2,8 @@
 
 namespace Tests\Unit;
 
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 use App\Helpers\HerokuS3;
 
@@ -20,10 +22,8 @@ class HerokuS3HelperTest extends TestCase
         $_ENV = $this->_oldenv;
     }
 
-    /**
-     * @test
-     * @dataProvider systemTestProvider
-     */
+    #[Test]
+    #[DataProvider('systemTestProvider')]
     public function get_aws_bucket_from_env($system_env, $expectations) {
         $this->restoreEnv($system_env);
 
@@ -33,10 +33,8 @@ class HerokuS3HelperTest extends TestCase
         );
     }
 
-    /**
-     * @test
-     * @dataProvider systemTestProvider
-     */
+    #[Test]
+    #[DataProvider('systemTestProvider')]
     public function get_aws_root_from_env($system_env, $expectations) {
         $this->restoreEnv($system_env);
 
@@ -46,10 +44,8 @@ class HerokuS3HelperTest extends TestCase
         );
     }
 
-    /**
-     * @test
-     * @dataProvider systemTestProvider
-     */
+    #[Test]
+    #[DataProvider('systemTestProvider')]
     public function get_aws_url_from_env($system_env, $expectations) {
         $this->restoreEnv($system_env);
 
@@ -59,10 +55,8 @@ class HerokuS3HelperTest extends TestCase
         );
     }
 
-    /**
-     * @test
-     * @dataProvider systemTestProvider
-     */
+    #[Test]
+    #[DataProvider('systemTestProvider')]
     public function get_default_aws_region($system_env, $expectations) {
         $this->restoreEnv($system_env);
 
@@ -72,10 +66,8 @@ class HerokuS3HelperTest extends TestCase
         );
     }
 
-    /**
-     * @test
-     * @dataProvider cloudcubeTestProvider
-     */
+    #[Test]
+    #[DataProvider('cloudcubeTestProvider')]
     public function get_default_cloudcube_region(
         $left_most_subdomain, $expectation
     ) {
@@ -115,7 +107,7 @@ class HerokuS3HelperTest extends TestCase
     public static function systemTestProvider() {
         return [
             "When CLOUDCUBE_URL is not set" => [
-                'ENV' => [],
+                'system_env' => [],
                 'expectations'=> [
                     'bucket' => null,
                     'aws_url' => null,
@@ -124,7 +116,7 @@ class HerokuS3HelperTest extends TestCase
                 ]
             ],
             "When CLOUDCUBE_URL is an US one" => [
-                'ENV' => [
+                'system_env' => [
                     'CLOUDCUBE_URL' => 'https://cloud-cube.s3.amazonaws.com/xmfnhr2po8rp'
                 ],
                 'expectations'=> [
@@ -135,7 +127,7 @@ class HerokuS3HelperTest extends TestCase
                 ]
             ],
             "When CLOUDCUBE_URL is an EU one" => [
-                'ENV' => [
+                'system_env' => [
                     'CLOUDCUBE_URL' => 'https://cloud-cube-eu.s3.amazonaws.com/my-apps-root'
                 ],
                 'expectations'=> [
@@ -146,7 +138,7 @@ class HerokuS3HelperTest extends TestCase
                 ]
             ],
             "When CLOUDCUBE_URL is an AP one" => [
-                'ENV' => [
+                'system_env' => [
                     'CLOUDCUBE_URL' => 'https://cloud-cube-jp.s3.amazonaws.com/something'
                 ],
                 'expectations'=> [

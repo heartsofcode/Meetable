@@ -9,10 +9,8 @@ use Illuminate\Http\Request;
 use App\Event, App\EventRevision, App\Tag, App\Response, App\User;
 use App\Events\EventCreated, App\Events\EventUpdated;
 use App\Events\WebmentionReceived;
-use Illuminate\Support\Str;
 use Auth, Gate;
 use DateTime, DateTimeZone, Exception;
-use p3k\XRay;
 
 class APIController extends BaseController
 {
@@ -41,6 +39,15 @@ class APIController extends BaseController
             }
         }
 
+        if(request('status') && !isset(Event::$STATUSES[request('status')])) {
+            return $this->error('invalid status');
+        }
+
+        $validator = \Validator::make(request()->all(), Event::url_validation_rules());
+        if($validator->fails()) {
+            return $this->error($validator->errors()->first());
+        }
+
         if(request('timezone')) {
             try {
                 $tz = new DateTimeZone(request('timezone'));
@@ -52,7 +59,7 @@ class APIController extends BaseController
         $event = new Event();
         $event->name = request('name');
 
-        $event->key = Str::random(12);
+        $event->generate_random_values();
         $event->slug = Event::slug_from_name($event->name);
 
         $event->location_name = request('location_name') ?: '';
@@ -125,6 +132,9 @@ class APIController extends BaseController
             return $this->error('Event not found');
         }
 
+        // Responses added here are approved right away, so this is limited to people who can manage the event
+        Gate::authorize('manage-event', $event);
+
         // Check if this response was already received via webmention and reject if so
         $response = $event->responses()->where('source_url', $url)->first();
 
@@ -132,14 +142,14 @@ class APIController extends BaseController
             return $this->error('That URL was already sent via Webmention');
         }
 
-        $xray = new XRay();
+        $xray = \App\Helpers\SafeHTTP::xray();
 
         $opts = [];
 
         $data = $xray->parse($url, $opts);
 
         if(isset($data['error'])) {
-            return $this->error($data['error_description']);
+            return $this->error(\App\Helpers\SafeHTTP::xray_error_description($data));
         }
 
         $sourceData = $data['data'];
@@ -151,7 +161,7 @@ class APIController extends BaseController
             $response->event_id = $event->id;
             $response->approved = true;
             $response->approved_by = Auth::user()->id;
-            $response->approved_at = date('Y:m:d H:i:s');
+            $response->approved_at = date('Y-m-d H:i:s');
             if(Auth::user()->is_admin) {
                 // Allow admin users to override the created_by to other users
                 $by = Auth::user()->id;
